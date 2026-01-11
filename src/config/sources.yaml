@@ -1,0 +1,48 @@
+sources:
+  warehouse_stock:
+    name: "warehouse_stock"
+    type: "csv"
+    path: "./data/raw/warehouse_stock.csv"
+    reliability_score: 0.7
+    description: "On-site warehouse physical inventory counts"
+    update_frequency: "shift_change"  # Updated every 8 hours
+    schema_mapping:
+      quantity: "qty_on_shelf"
+      cost: "unit_cost_zar"
+      timestamp: "last_updated"
+    
+  logistics_shipments:
+    name: "logistics_shipments"
+    type: "api"
+    endpoint: "http://localhost:8000/api/shipments/active"
+    reliability_score: 0.9
+    description: "Real-time logistics tracking from 3PL provider"
+    update_frequency: "realtime"  # Updates every 2 hours
+    schema_mapping:
+      quantity: "quantity_shipped"
+      cost: "unit_cost_usd"
+      timestamp: "last_updated"
+    authentication:
+      type: "none"  # Add API key if needed
+  
+  # EXAMPLE: How to add a new source
+  # supplier_quality:
+  #   name: "supplier_quality"
+  #   type: "api"
+  #   endpoint: "http://localhost:8000/api/suppliers/ratings"
+  #   reliability_score: 0.85
+  #   description: "Supplier on-time delivery ratings"
+  #   update_frequency: "daily"
+  #   schema_mapping:
+  #     supplier_id: "supplier_code"
+  #     rating: "otd_percentage"
+
+agent_config:
+  name: "Aura"
+  full_name: "Automated Replenishment Assistant"
+  role: "Autonomous procurement agent for Rustenburg platinum mine"
+  objective: "Maintain 99% uptime while minimizing dead capital"
+  safety_thresholds:
+    min_reliability: 0.6
+    max_data_age_hours: 24
+    shadow_stock_threshold_hours: 6
