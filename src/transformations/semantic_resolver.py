@@ -37,8 +37,6 @@ class SemanticConflictResolver:
         """
         Creates unified inventory view for a single part.
         
-        TODO: Implement this critical function
-        
         Steps:
         1. Extract qty_on_shelf from warehouse records
         2. Sum in_transit quantities from logistics (where status='in_transit')
@@ -48,31 +46,47 @@ class SemanticConflictResolver:
         6. Generate semantic context for Aura
         
         Args:
-            warehouse_records: All warehouse records for this part
-            logistics_records: All logistics records for this part
+            warehouse_records: All warehouse/silver events for this part (source_system='warehouse_stock')
+            logistics_records: All logistics/silver events for this part (source_system='logistics_shipments')
         
         Returns:
             Unified inventory fact with metadata
         """
-        # TODO: Implement logic
-        # This is where your knowledge engineering skills shine!
-        
         # Extract latest warehouse data
+        # Handle both raw records and silver events (different field names)
         if not warehouse_records:
             warehouse_qty = 0
             warehouse_timestamp = None
             warehouse_reliability = 0.0
         else:
-            latest_warehouse = max(warehouse_records, key=lambda x: x['last_updated'])
-            warehouse_qty = latest_warehouse['quantity']
-            warehouse_timestamp = datetime.fromisoformat(latest_warehouse['last_updated'])
-            warehouse_reliability = latest_warehouse['_reliability_score']
+            # Find latest warehouse record by timestamp
+            def get_timestamp(r):
+                ts = r.get('event_timestamp') or r.get('last_updated') or ''
+                if isinstance(ts, str):
+                    return ts
+                return str(ts)
+            
+            latest_warehouse = max(warehouse_records, key=get_timestamp)
+            warehouse_qty = latest_warehouse.get('quantity', 0)
+            
+            # Parse timestamp
+            ts_str = get_timestamp(latest_warehouse)
+            try:
+                if ts_str:
+                    warehouse_timestamp = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                else:
+                    warehouse_timestamp = None
+            except:
+                warehouse_timestamp = None
+            
+            # Get reliability score (handle both field names)
+            warehouse_reliability = latest_warehouse.get('reliability_score') or latest_warehouse.get('_reliability_score', 0.7)
         
-        # Calculate in-transit quantity
+        # Calculate in-transit quantity (only items with status='in_transit')
         in_transit_qty = sum([
-            r['quantity'] 
+            r.get('quantity', 0) 
             for r in logistics_records 
-            if r.get('status') == 'in_transit'
+            if r.get('status') == 'in_transit' or r.get('quantity_semantic') == 'in_transit'
         ])
         
         # Detect shadow stock
@@ -85,12 +99,13 @@ class SemanticConflictResolver:
         # Compute weighted reliability
         total_qty = warehouse_qty + in_transit_qty
         if total_qty > 0:
+            logistics_reliability = 0.9  # Logistics has 0.9 reliability
             reliability_score = (
                 (warehouse_qty * warehouse_reliability) + 
-                (in_transit_qty * 0.9)  # Logistics has 0.9 reliability
+                (in_transit_qty * logistics_reliability)
             ) / total_qty
         else:
-            reliability_score = min(warehouse_reliability, 0.9)
+            reliability_score = warehouse_reliability if warehouse_reliability > 0 else 0.5
         
         return {
             "qty_on_shelf": warehouse_qty,
@@ -115,8 +130,6 @@ class SemanticConflictResolver:
         """
         Detects "shadow stock" - inventory that's been delivered but not scanned in.
         
-        TODO: Implement shadow stock detection logic
-        
         Logic:
         1. Find all logistics records with status='delivered'
         2. Check if delivery timestamp is recent (within threshold)
@@ -125,22 +138,55 @@ class SemanticConflictResolver:
         This is critical for preventing Aura from over-ordering!
         """
         if not warehouse_timestamp:
+            # No warehouse data means we can't detect shadow stock
             return False
         
-        # Find delivered shipments
-        delivered = [r for r in logistics_records if r.get('status') == 'delivered']
+        # Find delivered shipments (check both event_type and status fields)
+        delivered = [
+            r for r in logistics_records 
+            if r.get('status') == 'delivered' or r.get('event_type') == 'goods_receipt'
+        ]
         
         if not delivered:
             return False
         
         # Check if any delivered shipment hasn't been reflected in warehouse count
         for shipment in delivered:
-            delivery_time = datetime.fromisoformat(shipment['last_updated'])
-            time_gap = warehouse_timestamp - delivery_time
-            
-            # If delivered but warehouse update is old, might be shadow stock
-            if time_gap > self.shadow_stock_threshold:
-                return True
+            # Get delivery timestamp (handle both field names)
+            ts_str = shipment.get('event_timestamp') or shipment.get('last_updated')
+            if not ts_str:
+                continue
+                
+            try:
+                if isinstance(ts_str, str):
+                    delivery_time = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                else:
+                    delivery_time = ts_str
+                
+                # Make both timestamps timezone-naive for comparison
+                if delivery_time.tzinfo is not None:
+                    delivery_time = delivery_time.replace(tzinfo=None)
+                if warehouse_timestamp.tzinfo is not None:
+                    warehouse_timestamp_naive = warehouse_timestamp.replace(tzinfo=None)
+                else:
+                    warehouse_timestamp_naive = warehouse_timestamp
+                
+                # If warehouse update is BEFORE delivery, that's shadow stock
+                # (delivered items not yet counted in warehouse)
+                if warehouse_timestamp_naive < delivery_time:
+                    return True
+                
+                # Also check if delivery was recent but warehouse is stale
+                time_since_delivery = datetime.now() - delivery_time
+                if time_since_delivery < self.shadow_stock_threshold:
+                    # Recent delivery - check if warehouse updated after
+                    time_gap = warehouse_timestamp_naive - delivery_time
+                    if time_gap < timedelta(0):  # Warehouse update is before delivery
+                        return True
+                        
+            except Exception as e:
+                # If we can't parse timestamps, be conservative
+                continue
         
         return False
     

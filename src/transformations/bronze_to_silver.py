@@ -128,6 +128,10 @@ def _extract_additional_context(record: Dict[str, Any]) -> Dict[str, Any]:
     """Extract source-specific additional fields"""
     context = {}
     
+    # Part name (from warehouse records)
+    if "part_name" in record:
+        context["part_name"] = record["part_name"]
+    
     # Warehouse-specific
     if "warehouse_location" in record:
         context["warehouse_location"] = record["warehouse_location"]
@@ -137,5 +141,7 @@ def _extract_additional_context(record: Dict[str, Any]) -> Dict[str, Any]:
         context["supplier"] = record["supplier"]
     if "estimated_arrival" in record:
         context["estimated_arrival"] = record["estimated_arrival"]
+    if "status" in record:
+        context["status"] = record["status"]
     
     return context

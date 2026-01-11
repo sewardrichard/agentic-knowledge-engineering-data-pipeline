@@ -1,10 +1,12 @@
 """
 Generate Mock Warehouse Data
 
-Creates a realistic CSV with intentional messiness:
-- Delayed timestamps
-- Occasional typos
-- Varied update patterns
+Creates a realistic CSV with intentional scenarios for demo:
+- High stock (SAFE query)
+- Shadow stock scenario (delivered but not counted)
+- Low stock (URGENT reorder)
+- Out of stock (CRITICAL)
+- Varied update patterns simulating shift changes
 """
 
 import pandas as pd
@@ -15,59 +17,65 @@ import random
 
 def generate_warehouse_csv(output_path: str = "./data/raw/warehouse_stock.csv"):
     """
-    Generate mock warehouse inventory CSV.
+    Generate mock warehouse inventory CSV with realistic mining operation data.
     
-    TODO: Enhance with more realistic scenarios
-    - Add parts that are out of stock
-    - Include different warehouse locations
-    - Vary update timestamps to simulate shift patterns
+    Scenarios covered:
+    - P001: High stock, recent update → SAFE query
+    - P002: Medium stock with in-transit → SAFE with in-transit
+    - P003: Shadow stock scenario (warehouse count is OLD, delivery happened after)
+    - P004: Low stock → URGENT reorder
+    - P005: Out of stock → CRITICAL
     """
     
-    # Define parts
+    now = datetime.now()
+    
+    # Define parts with specific scenarios
     parts_data = [
         {
             "part_id": "P001",
             "part_name": "Hydraulic Pump HP-2000",
             "qty_on_shelf": 45,
             "unit_cost_zar": 12500.00,
-            "warehouse_location": "JHB-North"
+            "warehouse_location": "Rustenburg-Main",
+            # Recent update - high confidence
+            "last_updated": (now - timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")
         },
         {
             "part_id": "P002",
             "part_name": "Conveyor Belt 1200mm",
-            "qty_on_shelf": 12,
+            "qty_on_shelf": 35,
             "unit_cost_zar": 8900.50,
-            "warehouse_location": "JHB-South"
+            "warehouse_location": "Rustenburg-Main",
+            # Recent update
+            "last_updated": (now - timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
         },
         {
             "part_id": "P003",
             "part_name": "Safety Valve SV-100",
             "qty_on_shelf": 78,
             "unit_cost_zar": 3200.00,
-            "warehouse_location": "CPT-Main"
+            "warehouse_location": "Rustenburg-Backup",
+            # OLD update - 10 hours ago, BEFORE delivery at 8 hours ago
+            # This creates SHADOW STOCK scenario
+            "last_updated": (now - timedelta(hours=10)).strftime("%Y-%m-%d %H:%M:%S")
         },
         {
             "part_id": "P004",
             "part_name": "Drill Bit 45mm Carbide",
-            "qty_on_shelf": 5,  # Low stock to trigger reorder
+            "qty_on_shelf": 5,  # LOW STOCK - triggers urgent reorder
             "unit_cost_zar": 1850.00,
-            "warehouse_location": "JHB-North"
+            "warehouse_location": "Rustenburg-Main",
+            "last_updated": (now - timedelta(hours=4)).strftime("%Y-%m-%d %H:%M:%S")
         },
         {
             "part_id": "P005",
             "part_name": "Bearing Assembly BA-500",
-            "qty_on_shelf": 0,  # Out of stock!
+            "qty_on_shelf": 0,  # OUT OF STOCK - critical
             "unit_cost_zar": 6750.00,
-            "warehouse_location": "JHB-South"
+            "warehouse_location": "Rustenburg-Main",
+            "last_updated": (now - timedelta(hours=6)).strftime("%Y-%m-%d %H:%M:%S")
         }
     ]
-    
-    # Add timestamps (simulate shift change updates)
-    now = datetime.now()
-    for i, part in enumerate(parts_data):
-        # Vary update times to simulate different shifts
-        hours_ago = random.randint(2, 12)
-        part["last_updated"] = (now - timedelta(hours=hours_ago)).strftime("%Y-%m-%d %H:%M:%S")
     
     # Create DataFrame
     df = pd.DataFrame(parts_data)
@@ -82,3 +90,13 @@ def generate_warehouse_csv(output_path: str = "./data/raw/warehouse_stock.csv"):
     print(f"✅ Generated warehouse CSV: {output_path}")
     print(f"   Parts: {len(df)}")
     print(f"   Total inventory value: R{df['qty_on_shelf'].mul(df['unit_cost_zar']).sum():,.2f}")
+    print("\n📋 Scenario breakdown:")
+    for _, row in df.iterrows():
+        stock_status = "✅ OK" if row['qty_on_shelf'] >= 50 else "⚠️ LOW" if row['qty_on_shelf'] > 0 else "🔴 OUT"
+        print(f"   {row['part_id']}: {row['qty_on_shelf']:3d} units [{stock_status}] - {row['part_name']}")
+    
+    return df
+
+
+if __name__ == "__main__":
+    generate_warehouse_csv()

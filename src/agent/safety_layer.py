@@ -14,7 +14,7 @@ This is what separates a "chatbot" from an "agentic system."
 """
 
 from typing import Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import duckdb
 
 
@@ -175,16 +175,30 @@ class AuraAgentSafetyLayer:
     def _check_freshness(self, fact: Dict[str, Any]) -> bool:
         """
         Check if data is fresh enough for autonomous decisions.
-        
-        TODO: Implement freshness check
+        Returns True if data is within MAX_DATA_AGE_HOURS threshold.
         """
         if not fact.get("shelf_last_updated"):
             return False
         
-        last_update = datetime.fromisoformat(fact["shelf_last_updated"])
-        age = datetime.now() - last_update
-        
-        return age < timedelta(hours=self.MAX_DATA_AGE_HOURS)
+        try:
+            last_update_str = fact["shelf_last_updated"]
+            # Handle both timezone-aware and naive timestamps
+            if isinstance(last_update_str, str):
+                last_update = datetime.fromisoformat(last_update_str.replace('Z', '+00:00'))
+            else:
+                last_update = last_update_str
+            
+            # Make timezone-aware if naive
+            if last_update.tzinfo is None:
+                last_update = last_update.replace(tzinfo=timezone.utc)
+            
+            now = datetime.now(timezone.utc)
+            age = now - last_update
+            
+            return age < timedelta(hours=self.MAX_DATA_AGE_HOURS)
+        except Exception as e:
+            print(f"Error checking freshness: {e}")
+            return False
     
     def _check_reliability(self, fact: Dict[str, Any]) -> bool:
         """Check if reliability score meets minimum threshold"""
