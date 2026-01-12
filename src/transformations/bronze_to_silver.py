@@ -16,7 +16,6 @@ from typing import List, Dict, Any
 from datetime import datetime, timezone
 
 
-@dlt.transformer(name="silver_inventory_events", write_disposition="append")
 def normalize_to_events(bronze_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Transforms Bronze layer into normalized Silver event stream.
@@ -39,9 +38,21 @@ def normalize_to_events(bronze_data: List[Dict[str, Any]]) -> List[Dict[str, Any
         # Determine event type based on source and status
         event_type = _classify_event(record)
         
-        # Parse timestamp
-        event_timestamp = _parse_timestamp(record.get('last_updated'))
-        ingestion_timestamp = datetime.fromisoformat(record['_ingested_at'])
+        # Parse timestamp - handle both string and datetime objects from DuckDB
+        last_updated = record.get('last_updated')
+        if isinstance(last_updated, datetime):
+            event_timestamp = last_updated
+        elif isinstance(last_updated, str):
+            event_timestamp = _parse_timestamp(last_updated)
+        else:
+            event_timestamp = datetime.now(timezone.utc)
+        
+        # Handle ingestion timestamp (might already be datetime object from DuckDB)
+        ingestion_ts = record['_ingested_at']
+        if isinstance(ingestion_ts, str):
+            ingestion_timestamp = datetime.fromisoformat(ingestion_ts)
+        else:
+            ingestion_timestamp = ingestion_ts
         
         # Check if late-arriving
         lateness = (ingestion_timestamp - event_timestamp).total_seconds() / 3600
@@ -106,12 +117,18 @@ def _classify_event(record: Dict[str, Any]) -> str:
 
 def _parse_timestamp(timestamp_str: str) -> datetime:
     """Safely parse various timestamp formats to UTC datetime"""
+    if not timestamp_str:
+        return datetime.now(timezone.utc)
+    
     try:
-        dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+        # Handle ISO format with Z or +00:00
+        dt = datetime.fromisoformat(str(timestamp_str).replace('Z', '+00:00'))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt
-    except:
+    except Exception as e:
+        # If parsing fails, return current time as fallback
+        print(f"Warning: Failed to parse timestamp '{timestamp_str}': {e}. Using current time.")
         return datetime.now(timezone.utc)
 
 

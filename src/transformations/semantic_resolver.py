@@ -82,11 +82,20 @@ class SemanticConflictResolver:
             # Get reliability score (handle both field names)
             warehouse_reliability = latest_warehouse.get('reliability_score') or latest_warehouse.get('_reliability_score', 0.7)
         
-        # Calculate in-transit quantity (only items with status='in_transit')
+        # Calculate in-transit quantity (ONLY items with status='in_transit')
+        # EXCLUDE delivered items even if shadow stock is detected
         in_transit_qty = sum([
             r.get('quantity', 0) 
             for r in logistics_records 
-            if r.get('status') == 'in_transit' or r.get('quantity_semantic') == 'in_transit'
+            if r.get('status') == 'in_transit' and r.get('status') != 'delivered'
+        ])
+        
+        # Calculate delivered but not shelved (shadow stock quantity)
+        # These are items marked as delivered in logistics but not yet in warehouse count
+        shadow_qty = sum([
+            r.get('quantity', 0)
+            for r in logistics_records
+            if r.get('status') == 'delivered'
         ])
         
         # Detect shadow stock
@@ -107,15 +116,21 @@ class SemanticConflictResolver:
         else:
             reliability_score = warehouse_reliability if warehouse_reliability > 0 else 0.5
         
+        # Note: Shadow stock detection is a FEATURE, not a failure
+        # We don't penalize reliability for detecting it correctly
+        # Instead, we flag it as an inconsistency for manual review
+        
         return {
             "qty_on_shelf": warehouse_qty,
             "in_transit_qty": in_transit_qty,
-            "effective_inventory": warehouse_qty + in_transit_qty,
+            "shadow_stock_qty": shadow_qty if has_shadow else 0,
+            "effective_inventory": warehouse_qty + in_transit_qty,  # Don't count shadow stock in effective inventory
             "has_inconsistency": has_shadow,
             "data_reliability_index": round(reliability_score, 3),
             "semantic_context": self._generate_context(
                 warehouse_qty, 
-                in_transit_qty, 
+                in_transit_qty,
+                shadow_qty if has_shadow else 0,
                 has_shadow
             ),
             "shelf_last_updated": warehouse_timestamp.isoformat() if warehouse_timestamp else None,
@@ -193,7 +208,8 @@ class SemanticConflictResolver:
     def _generate_context(
         self, 
         on_shelf: int, 
-        in_transit: int, 
+        in_transit: int,
+        shadow_qty: int,
         has_shadow: bool
     ) -> str:
         """
@@ -201,12 +217,12 @@ class SemanticConflictResolver:
         
         This helps Aura explain its reasoning to humans.
         """
-        if has_shadow:
-            return (
-                f"Inventory includes {on_shelf} confirmed on-shelf units and "
-                f"{in_transit} in-transit units. WARNING: Possible shadow stock detected - "
-                f"recent deliveries may not be reflected in warehouse count."
-            )
+        if has_shadow and shadow_qty > 0:
+            base = f"Inventory includes {on_shelf} confirmed on-shelf units"
+            if in_transit > 0:
+                base += f" and {in_transit} units in-transit"
+            base += f". WARNING: {shadow_qty} units marked as DELIVERED but NOT yet counted in warehouse stock (shadow stock)"
+            return base
         elif in_transit > 0:
             return (
                 f"Inventory includes {on_shelf} confirmed on-shelf units and "

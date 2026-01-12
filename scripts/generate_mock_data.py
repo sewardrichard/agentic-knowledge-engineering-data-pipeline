@@ -1,5 +1,7 @@
 """
-Generate Mock Warehouse Data
+Generate Mock Warehouse Data - ONE-TIME SETUP SCRIPT
+
+⚠️ IMPORTANT: Run this ONCE during initial setup, NOT before each demo run!
 
 Creates a realistic CSV with intentional scenarios for demo:
 - High stock (SAFE query)
@@ -7,6 +9,12 @@ Creates a realistic CSV with intentional scenarios for demo:
 - Low stock (URGENT reorder)
 - Out of stock (CRITICAL)
 - Varied update patterns simulating shift changes
+
+The timestamps are intentionally OLD (10+ hours ago) to create the shadow stock
+scenario when compared with the mock API's delivery timestamps.
+
+DO NOT regenerate this file before each demo run, or the timestamps will be fresh
+and shadow stock detection won't work!
 """
 
 import pandas as pd

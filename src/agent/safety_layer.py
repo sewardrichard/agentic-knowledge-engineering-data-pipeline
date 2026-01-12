@@ -94,9 +94,9 @@ class AuraAgentSafetyLayer:
         if not safety_checks["is_reliable"]:
             return {
                 "status": "BLOCKED",
-                "reason": f"Data reliability ({fact['data_reliability_index']}) below threshold ({self.MIN_RELIABILITY})",
+                "reason": f"Data reliability ({fact['data_reliability_index']:.1%}) below threshold ({self.MIN_RELIABILITY:.0%})",
                 "action": "Request fresh warehouse count or verify logistics data",
-                "data": None,
+                "data": fact,  # Include data so timestamp analysis can still display
                 "checks": safety_checks
             }
         
@@ -137,8 +137,6 @@ class AuraAgentSafetyLayer:
     def _query_gold_layer(self, part_id: str) -> Optional[Dict[str, Any]]:
         """
         Query the gold.inventory_facts table.
-        
-        TODO: Implement actual DuckDB query
         """
         try:
             query = """
@@ -147,6 +145,7 @@ class AuraAgentSafetyLayer:
                     part_name,
                     qty_on_shelf,
                     in_transit_qty,
+                    shadow_stock_qty,
                     effective_inventory,
                     data_reliability_index,
                     semantic_context,
@@ -166,7 +165,16 @@ class AuraAgentSafetyLayer:
             
             # Convert to dictionary
             columns = [desc[0] for desc in self.conn.description]
-            return dict(zip(columns, result))
+            fact = dict(zip(columns, result))
+            
+            # Parse JSON fields
+            if fact.get('reorder_recommendation'):
+                import json
+                reorder = fact['reorder_recommendation']
+                if isinstance(reorder, str):
+                    fact['reorder_recommendation'] = json.loads(reorder)
+            
+            return fact
         
         except Exception as e:
             print(f"Error querying gold layer: {e}")

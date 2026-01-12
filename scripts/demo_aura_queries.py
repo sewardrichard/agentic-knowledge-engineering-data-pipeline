@@ -8,6 +8,8 @@ Run after pipeline has completed: python scripts/demo_aura_queries.py
 
 import sys
 from pathlib import Path
+from typing import Dict, Any
+from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -24,29 +26,72 @@ def print_header():
     print("This shows the Agent Safety Layer in action.\n")
 
 
-def print_response(response: dict, scenario_name: str, emoji: str = "📋"):
-    """Pretty print Aura's response"""
+def print_response(response: Dict[str, Any], scenario_name: str, emoji: str = "📋"):
+    """Pretty print Aura's response with detailed safety checks"""
     print("\n" + "-" * 70)
     print(f"{emoji} SCENARIO: {scenario_name}")
     print("-" * 70)
     
     status = response.get('status', 'UNKNOWN')
-    status_emoji = {"SAFE": "🟢", "WARNING": "🟡", "BLOCKED": "🔴"}.get(status, "⚪")
-    print(f"Status: {status_emoji} {status}")
+    status_emoji = {
+        'SAFE': '🟢',
+        'WARNING': '🟡',
+        'BLOCKED': '🔴'
+    }.get(status, '❓')
     
-    if response.get('confidence'):
-        print(f"Confidence: {response['confidence'].upper()}")
+    print(f"Status: {status_emoji} {status}")
+    print(f"Confidence: {response.get('confidence', 'N/A').upper()}")
+    
+    # Show detailed safety checks
+    if response.get('checks'):
+        checks = response['checks']
+        print(f"\n🔍 Safety Checks Performed:")
+        print(f"  • Data Freshness: {'✅ PASS' if checks.get('is_fresh') else '⚠️ STALE'}")
+        print(f"  • Data Reliability: {'✅ PASS' if checks.get('is_reliable') else '❌ FAIL'}")
+        print(f"  • Shadow Stock Detection: {'⚠️ DETECTED' if checks.get('has_conflicts') else '✅ NONE'}")
+        print(f"  • Overall Confidence: {checks.get('confidence_level', 'unknown').upper()}")
     
     if response.get('data'):
         data = response['data']
+        
+        # Show timestamp analysis for shadow stock detection
+        if data.get('shelf_last_updated'):
+            print(f"\n⏰ Timestamp Analysis:")
+            shelf_time = data['shelf_last_updated']
+            try:
+                if isinstance(shelf_time, str):
+                    shelf_dt = datetime.fromisoformat(shelf_time.replace('Z', '+00:00'))
+                else:
+                    shelf_dt = shelf_time
+                
+                # Format timestamp as YYYY-MM-DD HH:MM:SS
+                formatted_time = shelf_dt.strftime('%Y-%m-%d %H:%M:%S')
+                
+                now = datetime.now(shelf_dt.tzinfo) if shelf_dt.tzinfo else datetime.now()
+                age_hours = (now - shelf_dt).total_seconds() / 3600
+                print(f"  • Warehouse Last Updated: {formatted_time}")
+                print(f"  • Data Age: {age_hours:.1f} hours ago")
+                
+                # Show shadow stock detection logic
+                if data.get('has_inconsistency'):
+                    print(f"  • ⚠️ Shadow Stock Detected: Delivery timestamp AFTER warehouse update")
+                    print(f"  • Logic: Logistics shows 'delivered' but warehouse count is stale")
+                else:
+                    print(f"  • ✅ No Temporal Conflicts: Warehouse data is current")
+            except Exception as e:
+                print(f"  • Warehouse Last Updated: {shelf_time}")
+        
         print(f"\n📦 Inventory Data:")
         print(f"  • Effective Inventory: {data.get('effective_inventory', 'N/A')} units")
         print(f"  • On Shelf: {data.get('qty_on_shelf', 'N/A')} units")
         print(f"  • In Transit: {data.get('in_transit_qty', 'N/A')} units")
         
-        reliability = data.get('data_reliability_index')
-        if reliability:
-            print(f"  • Data Reliability: {reliability:.1%}")
+        # Show shadow stock if present
+        if data.get('shadow_stock_qty', 0) > 0:
+            print(f"  • ⚠️ Shadow Stock: {data['shadow_stock_qty']} units (delivered but not shelved)")
+            print(f"    └─ These units are EXCLUDED from effective inventory (conservative approach)")
+        
+        print(f"  • Data Reliability: {data.get('data_reliability_index', 0) * 100:.1f}%")
         
         if data.get('semantic_context'):
             print(f"\n📝 Context: {data['semantic_context']}")

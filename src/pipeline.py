@@ -30,8 +30,6 @@ def run_bronze_layer():
     """
     Bronze Layer: Ingest raw data from all sources
     
-    TODO: Complete this function
-    
     Steps:
     1. Load config
     2. Initialize sources (WarehouseSource, LogisticsSource)
@@ -57,24 +55,41 @@ def run_bronze_layer():
         reliability_score=logistics_config["reliability_score"]
     )
     
-    # Create DLT pipeline
+    # Create DLT resources as standalone functions (works better with DLT)
+    @dlt.resource(name="warehouse_stock", write_disposition="replace")
+    def warehouse_data():
+        for record in warehouse_source.load_raw_data():
+            yield {
+                **record,
+                "_source_system": warehouse_source.name,
+                "_source_type": warehouse_source.source_type,
+                "_reliability_score": warehouse_source.reliability_score,
+                "_ingested_at": datetime.now().isoformat(),
+            }
+    
+    @dlt.resource(name="logistics_shipments", write_disposition="replace")
+    def logistics_data():
+        for record in logistics_source.load_raw_data():
+            yield {
+                **record,
+                "_source_system": logistics_source.name,
+                "_source_type": logistics_source.source_type,
+                "_reliability_score": logistics_source.reliability_score,
+                "_ingested_at": datetime.now().isoformat(),
+            }
+    
+    # Create DLT pipeline with explicit database path
     pipeline = dlt.pipeline(
         pipeline_name="aura_bronze",
-        destination="duckdb",
+        destination=dlt.destinations.duckdb(DB_PATH),
         dataset_name="bronze",
-        dev_mode=False  # Set to False for production
+        dev_mode=False
     )
     
-    # Run ingestion
-    info = pipeline.run(
-        [
-            warehouse_source.to_dlt_resource().with_name("warehouse_stock"),
-            logistics_source.to_dlt_resource().with_name("logistics_shipments")
-        ],
-        write_disposition="append"
-    )
+    # Run ingestion with replace mode to avoid duplicates
+    info = pipeline.run([warehouse_data(), logistics_data()])
     
-    print(f"✅ Bronze layer complete. Loaded {info.metrics['rows']} rows")
+    print(f"✅ Bronze layer complete. Loaded data to {DB_PATH}")
     return pipeline
 
 
@@ -95,6 +110,12 @@ def run_silver_layer(bronze_pipeline):
     try:
         # Create silver schema if not exists
         conn.execute("CREATE SCHEMA IF NOT EXISTS silver")
+        
+        # Clear existing silver data to avoid duplicates
+        try:
+            conn.execute("DROP TABLE IF EXISTS silver.inventory_events")
+        except:
+            pass
         
         # Read warehouse data from bronze
         warehouse_data = []
@@ -211,6 +232,12 @@ def run_gold_layer(silver_events=None):
         # Create gold schema if not exists
         conn.execute("CREATE SCHEMA IF NOT EXISTS gold")
         
+        # Clear existing gold data to avoid duplicates
+        try:
+            conn.execute("DROP TABLE IF EXISTS gold.inventory_facts")
+        except:
+            pass
+        
         # Read silver events if not passed
         if silver_events is None:
             try:
@@ -257,6 +284,7 @@ def run_gold_layer(silver_events=None):
                 part_name VARCHAR,
                 qty_on_shelf INTEGER,
                 in_transit_qty INTEGER,
+                shadow_stock_qty INTEGER,
                 effective_inventory INTEGER,
                 data_reliability_index DOUBLE,
                 semantic_context VARCHAR,
@@ -294,16 +322,17 @@ def run_gold_layer(silver_events=None):
             # Insert/update fact
             conn.execute("""
                 INSERT OR REPLACE INTO gold.inventory_facts (
-                    part_id, part_name, qty_on_shelf, in_transit_qty,
+                    part_id, part_name, qty_on_shelf, in_transit_qty, shadow_stock_qty,
                     effective_inventory, data_reliability_index, semantic_context,
                     has_inconsistency, confidence_level, reorder_recommendation,
                     fact_valid_from, fact_valid_to, shelf_last_updated
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 part_id,
                 part_name,
                 unified["qty_on_shelf"],
                 unified["in_transit_qty"],
+                unified.get("shadow_stock_qty", 0),
                 unified["effective_inventory"],
                 unified["data_reliability_index"],
                 unified["semantic_context"],

@@ -90,36 +90,9 @@ def get_active_shipments(
             "status": "delivered",  # CRITICAL: Creates shadow stock scenario!
             "last_updated": (now - timedelta(hours=8)).isoformat() + "Z"
         },
-        # Scenario: Urgent restock for P004 (low stock item)
-        {
-            "shipment_id": "SHP-2024-004",
-            "supplier": "DrillTech Solutions",
-            "parts": [
-                {
-                    "part_id": "P004",
-                    "quantity_shipped": 100,
-                    "unit_cost_usd": 100.00  # ~R1,850 at 18.5 rate
-                }
-            ],
-            "estimated_arrival": (now + timedelta(days=3)).strftime("%Y-%m-%d"),
-            "status": "in_transit",
-            "last_updated": (now - timedelta(hours=1)).isoformat() + "Z"
-        },
-        # Scenario: Emergency order for P005 (out of stock)
-        {
-            "shipment_id": "SHP-2024-005",
-            "supplier": "Bearing World",
-            "parts": [
-                {
-                    "part_id": "P005",
-                    "quantity_shipped": 25,
-                    "unit_cost_usd": 364.86  # ~R6,750 at 18.5 rate
-                }
-            ],
-            "estimated_arrival": (now + timedelta(days=1)).strftime("%Y-%m-%d"),
-            "status": "in_transit",
-            "last_updated": (now - timedelta(hours=3)).isoformat() + "Z"
-        }
+        # Scenario 3 (P004): Low stock - NO in-transit to show urgent reorder needed
+        # Scenario 4 (P005): Out of stock - NO in-transit to show critical situation
+        # These scenarios should trigger reorder recommendations without any pending shipments
     ]
     
     # Modify based on scenario
