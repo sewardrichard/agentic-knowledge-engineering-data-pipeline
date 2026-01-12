@@ -111,6 +111,292 @@ This requires Aura to know:
 
 *Diagrams & screenshots: see `diagrams/screenshots/README.md`.*
 
+### Architecture Diagrams (Mermaid)
+
+<details>
+<summary>Diagram 01: System Architecture Overview</summary>
+
+```mermaid
+graph TD
+  subgraph Sources[Data Sources]
+    CSV["Warehouse CSV file
+    data/raw/warehouse_stock.csv"]
+  end
+
+  subgraph Mock[Mock API Server]
+    FastAPI["FastAPI app
+    mock_apis/main.py"]
+    Shipments["GET /api/shipments/active"]
+    FxRate["GET /api/fx/usd-zar"]
+  end
+
+  subgraph Orchestration[Pipeline Orchestration]
+    Runner["CLI runner
+    scripts/run_pipeline.py"]
+    Pipeline["src/pipeline.py
+    run_full_pipeline()"]
+    WS["src/sources/warehouse_source.py
+    WarehouseSource"]
+    LS["src/sources/logistics_source.py
+    LogisticsSource"]
+  end
+
+  subgraph Storage[DuckDB]
+    DB[("data/processed/aura.duckdb")]
+    Bronze[("bronze.*")]
+    Silver[("silver.inventory_events")]
+    Gold[("gold.inventory_facts")]
+  end
+
+  subgraph Agent[Agent Consumption]
+    Aura["Aura client"]
+    Query["agent/query_interface.py
+    AuraQueryInterface"]
+    Safety["agent/safety_layer.py
+    AuraAgentSafetyLayer"]
+  end
+
+  Runner --> Pipeline
+
+  Pipeline --> WS
+  WS --> CSV
+
+  Pipeline --> LS
+  LS --> Shipments
+  LS --> FxRate
+  FastAPI --> Shipments
+  FastAPI --> FxRate
+
+  Pipeline -->|DLT ingestion| Bronze
+  Bronze --> DB
+  Pipeline -->|normalize_to_events| Silver
+  Silver --> DB
+  Pipeline -->|SemanticConflictResolver| Gold
+  Gold --> DB
+
+  Aura --> Query
+  Query --> Safety
+  Safety -->|SELECT from gold.inventory_facts| Gold
+```
+
+</details>
+
+<details>
+<summary>Diagram 02: Data Flow (Medallion Architecture)</summary>
+
+```mermaid
+graph LR
+  subgraph Bronze[Bronze: Raw ingestion DLT to DuckDB]
+    B1["bronze.warehouse_stock
+    fields: part_id, part_name, quantity,
+    unit_cost_zar, last_updated, warehouse_location
+    metadata: _source_system, _source_type,
+    _reliability_score, _ingested_at"]
+    B2["bronze.logistics_shipments
+    fields: shipment_id, part_id, quantity,
+    unit_cost_zar, status, estimated_arrival, last_updated
+    metadata: _source_system, _source_type,
+    _reliability_score, _ingested_at"]
+  end
+
+  subgraph Silver[Silver: Normalized event stream]
+    S1["silver.inventory_events
+    event_id, event_type, part_id, part_name,
+    quantity, quantity_semantic, unit_cost_zar
+    event_timestamp, ingestion_timestamp,
+    is_late_arrival, lateness_hours, status"]
+  end
+
+  subgraph Gold[Gold: Agent-ready facts]
+    G1["gold.inventory_facts
+    qty_on_shelf, in_transit_qty,
+    shadow_stock_qty, effective_inventory
+    data_reliability_index, semantic_context,
+    has_inconsistency, confidence_level
+    reorder_recommendation, shelf_last_updated"]
+  end
+
+  N["transformations/bronze_to_silver.py
+  normalize_to_events()"]
+  R["transformations/semantic_resolver.py
+  SemanticConflictResolver.resolve_inventory()"]
+  RR["src/pipeline.py
+  _calculate_reorder_recommendation()"]
+  CF["src/pipeline.py
+  _assess_confidence()"]
+
+  B1 --> N
+  B2 --> N
+  N --> S1
+  S1 --> R
+  R --> G1
+  RR --> G1
+  CF --> G1
+```
+
+</details>
+
+<details>
+<summary>Diagram 03: Event-to-Fact Timeline (Bitemporal Tracking)</summary>
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant W as Warehouse CSV
+  participant L as Logistics API
+  participant P as Pipeline (Silver)
+  participant S as silver.inventory_events
+  participant G as gold.inventory_facts
+
+  Note over W: event_timestamp = last_updated (business time)
+  Note over P: ingestion_timestamp = _ingested_at (system time)
+
+  W->>P: Stock count record
+  P->>S: INSERT event_type=stock_count<br/>(event_timestamp, ingestion_timestamp)
+
+  L->>P: Shipment status=in_transit
+  P->>S: INSERT event_type=shipment_in_transit<br/>(event_timestamp, ingestion_timestamp)
+
+  Note over P,S: Late arrival detection<br/>if (ingestion - event) > 12h then is_late_arrival=true
+
+  P->>G: Recompute fact for part_id<br/>from all events in S
+  Note over G: fact_valid_to is NULL for current snapshot
+```
+
+</details>
+
+<details>
+<summary>Diagram 04: Semantic Conflict Resolution</summary>
+
+```mermaid
+flowchart TD
+  WH["Warehouse events
+  (source_system=warehouse_stock)
+  quantity_semantic=on_shelf"]
+  
+  LWH["Pick latest by timestamp
+  qty_on_shelf = quantity
+  warehouse_reliability = reliability_score"]
+  
+  LG["Logistics events
+  (source_system=logistics_shipments)
+  quantity_semantic=in_transit"]
+  
+  INTR["Sum quantity where status='in_transit'
+  in_transit_qty"]
+  
+  DEL["Sum quantity where status='delivered'
+  shadow_stock_qty candidate"]
+  
+  SH["Detect shadow stock
+  (delivery timestamp after warehouse update)
+  has_inconsistency"]
+  
+  EI["effective_inventory = 
+  qty_on_shelf + in_transit_qty
+  (excludes delivered/shadow stock)"]
+  
+  REL["Weighted reliability
+  (warehouse_qty*warehouse_rel + 
+  in_transit_qty*0.9)/(total_qty)"]
+  
+  OUT["Output unified fact fields
+  shadow_stock_qty (only if has_inconsistency)
+  semantic_context
+  data_reliability_index"]
+
+  WH --> LWH
+  LG --> INTR
+  LG --> DEL
+  LWH --> SH
+  DEL --> SH
+  LWH --> EI
+  INTR --> EI
+  EI --> REL
+  SH --> OUT
+  REL --> OUT
+```
+
+</details>
+
+<details>
+<summary>Diagram 05: Shadow Stock Detection Scenario</summary>
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant L as Logistics API
+  participant W as Warehouse CSV
+  participant P as Pipeline (Gold)
+  participant R as SemanticConflictResolver
+  participant G as gold.inventory_facts
+  participant A as AuraAgentSafetyLayer
+
+  L->>P: Shipment status='delivered'<br/>(quantity=50, last_updated=T_delivery)
+  W->>P: Stock count last_updated=T_warehouse<br/>(T_warehouse < T_delivery)
+  P->>R: resolve_inventory(warehouse_events, logistics_events)
+  R-->>P: has_inconsistency=true<br/>shadow_stock_qty=50<br/>effective_inventory excludes 50
+  P->>G: INSERT OR REPLACE fact<br/>(has_inconsistency=true)
+  A->>G: SELECT current fact
+  A-->>A: Consistency check fails (shadow stock)
+  A-->>A: Return WARNING with manual verification action
+```
+
+</details>
+
+<details>
+<summary>Diagram 06: Agent Query Sequence (Safety Checks)</summary>
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Client as Aura client
+  participant Q as AuraQueryInterface.ask()
+  participant S as AuraAgentSafetyLayer.query_with_safety()
+  participant DB as DuckDB (read-only)
+  participant G as gold.inventory_facts
+
+  Client->>Q: ask(part_id, question)
+  Q->>S: query_with_safety(part_id, question)
+  S->>DB: Connect read_only=True
+  S->>G: SELECT ... WHERE part_id=? AND fact_valid_to IS NULL
+
+  alt No fact found
+    S-->>Client: BLOCKED (no data)
+  else Fact found
+    S-->>S: Check reliability >= 0.6
+    alt Reliability below threshold
+      S-->>Client: BLOCKED (refresh/verify)
+    else Reliability ok
+      S-->>S: Check has_inconsistency
+      alt Inconsistency detected
+        S-->>Client: WARNING (shadow stock)
+      else No inconsistency
+        S-->>S: Check freshness (shelf_last_updated within 24h)
+        alt Stale
+          S-->>Client: WARNING (stale)
+        else Fresh
+          S-->>S: SAFE (data + reasoning)
+        end
+      end
+    end
+  end
+```
+
+</details>
+
+### Screenshots
+
+![Pipeline execution log](diagrams/screenshots/01%20-%20Pipeline%20execution.png)
+
+![Scenario 1 output](diagrams/screenshots/02%20-%20Scenario%201.png)
+
+![Scenario 2 output](diagrams/screenshots/03%20-%20Scenario%202.png)
+
+![Scenario 3 output](diagrams/screenshots/04%20-%20Scenario%203.png)
+
+![Scenario 4 output](diagrams/screenshots/05%20-%20Scenario%204.png)
+
 ### Component Descriptions
 
 #### Bronze Layer (Raw Ingestion)

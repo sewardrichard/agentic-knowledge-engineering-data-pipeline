@@ -49,6 +49,78 @@ Expected scenarios in console:
 - Shadow Stock Scenario timeline: see `README.md` → “Semantic Conflict Resolution”.
 - Additional screenshots: `diagrams/screenshots/README.md`.
 
+<details>
+<summary>System Architecture (Mermaid)</summary>
+
+```mermaid
+graph TD
+  subgraph Sources[Data Sources]
+    CSV["Warehouse CSV file
+    data/raw/warehouse_stock.csv"]
+  end
+
+  subgraph Mock[Mock API Server]
+    FastAPI["FastAPI app
+    mock_apis/main.py"]
+    Shipments["GET /api/shipments/active"]
+    FxRate["GET /api/fx/usd-zar"]
+  end
+
+  subgraph Orchestration[Pipeline Orchestration]
+    Runner["CLI runner
+    scripts/run_pipeline.py"]
+    Pipeline["src/pipeline.py
+    run_full_pipeline()"]
+  end
+
+  subgraph Storage[DuckDB]
+    DB[("data/processed/aura.duckdb")]
+    Bronze[("bronze.*")]
+    Silver[("silver.inventory_events")]
+    Gold[("gold.inventory_facts")]
+  end
+
+  subgraph Agent[Agent Consumption]
+    Query["agent/query_interface.py"]
+    Safety["agent/safety_layer.py"]
+  end
+
+  Runner --> Pipeline
+
+  Pipeline --> CSV
+  Pipeline --> Shipments
+  Pipeline --> FxRate
+  FastAPI --> Shipments
+  FastAPI --> FxRate
+
+  Pipeline -->|DLT ingestion| Bronze
+  Bronze --> DB
+  Pipeline --> Silver
+  Silver --> DB
+  Pipeline --> Gold
+  Gold --> DB
+
+  Query --> Safety
+  Safety --> Gold
+```
+
+</details>
+
+<details>
+<summary>Demo Output Screenshots (PNGs)</summary>
+
+![Pipeline execution log](diagrams/screenshots/01%20-%20Pipeline%20execution.png)
+
+![Scenario 1 output](diagrams/screenshots/02%20-%20Scenario%201.png)
+
+![Scenario 2 output](diagrams/screenshots/03%20-%20Scenario%202.png)
+
+![Scenario 3 output](diagrams/screenshots/04%20-%20Scenario%203.png)
+
+![Scenario 4 output](diagrams/screenshots/05%20-%20Scenario%204.png)
+
+</details>
+
 ---
 
 ## Why This Is Agent-First
