@@ -1,4 +1,4 @@
-# 🤖 Aura Knowledge Engineering Pipeline
+# 🤖 Aura Knowledge Engineering Data Pipeline
 
 **Making Mining Data Agent-Ready**
 
@@ -109,7 +109,7 @@ This requires Aura to know:
 └──────────────┘      └──────────────┘
 ```
 
-*Full architecture diagram: [diagrams/01_system_architecture.png]*
+*Diagrams & screenshots: see `diagrams/screenshots/README.md`.*
 
 ### Component Descriptions
 
@@ -117,7 +117,7 @@ This requires Aura to know:
 - **Purpose:** Exact copies of source data with no transformation
 - **Technology:** DLT + DuckDB
 - **Metadata Added:** `_source_system`, `_reliability_score`, `_ingested_at`
-- **Write Mode:** Append-only (immutable history)
+- **Write Mode:** `replace` per run (fresh, reproducible demo runs)
 
 #### Silver Layer (Event Stream)
 - **Purpose:** Normalized, unified schema; all events in chronological order
@@ -126,7 +126,7 @@ This requires Aura to know:
   - Timestamp normalization (all UTC)
   - Event classification (stock_count, shipment_dispatch, goods_receipt)
   - Late-arrival detection (bitemporal tracking)
-- **Write Mode:** Append-only
+- **Write Mode:** Rebuilt per run (drops and recreates `silver.inventory_events`)
 
 #### Gold Layer (Agent-Ready Facts)
 - **Purpose:** Current state of truth, optimized for agent queries
@@ -136,7 +136,7 @@ This requires Aura to know:
   - `semantic_context` (human-readable explanation)
   - `has_inconsistency` (shadow stock flag)
   - `reorder_recommendation` (decision support)
-- **Write Mode:** Merge/upsert with temporal validity
+- **Write Mode:** Rebuilt per run (`INSERT OR REPLACE` into `gold.inventory_facts`)
 
 #### Agent Safety Layer
 - **Purpose:** Prevents autonomous decisions on unreliable data
@@ -152,8 +152,8 @@ This requires Aura to know:
 
 ### The Core Distinction
 
-**Events** = Things that happen (immutable, append-only)  
-**Facts** = Current state of truth (updated, versioned)
+**Events** = Things that happen (captured as a normalized event stream)  
+**Facts** = Current computed state (agent-ready snapshot)
 
 This distinction is critical for agentic systems because:
 1. Agents need to know "what is true NOW" (facts)
@@ -176,13 +176,22 @@ Events represent immutable business occurrences stored in Silver layer:
 CREATE TABLE silver.inventory_events (
     event_id VARCHAR PRIMARY KEY,
     event_type VARCHAR,
-    event_timestamp TIMESTAMP,    -- When it happened (business time)
-    ingestion_timestamp TIMESTAMP, -- When we learned (system time)
     part_id VARCHAR,
-    quantity INT,
-    quantity_semantic VARCHAR,     -- 'on_shelf' or 'in_transit'
+    part_name VARCHAR,
+    quantity INTEGER,
+    quantity_semantic VARCHAR,
+    unit_cost_zar DOUBLE,
+    event_timestamp TIMESTAMP,
+    ingestion_timestamp TIMESTAMP,
+    is_late_arrival BOOLEAN,
+    lateness_hours DOUBLE,
     source_system VARCHAR,
-    reliability_score DECIMAL
+    source_type VARCHAR,
+    reliability_score DOUBLE,
+    warehouse_location VARCHAR,
+    supplier VARCHAR,
+    estimated_arrival VARCHAR,
+    status VARCHAR
 );
 ```
 
@@ -193,24 +202,19 @@ Facts represent the current computed state in Gold layer:
 ```sql
 CREATE TABLE gold.inventory_facts (
     part_id VARCHAR PRIMARY KEY,
-    
-    -- Core inventory
-    qty_on_shelf INT,
-    in_transit_qty INT,
-    effective_inventory INT,       -- Computed from events
-    
-    -- Temporal validity
-    fact_valid_from TIMESTAMP,
-    fact_valid_to TIMESTAMP,       -- NULL = currently valid
-    
-    -- Metadata for Aura
-    data_reliability_index DECIMAL,
-    semantic_context TEXT,
+    part_name VARCHAR,
+    qty_on_shelf INTEGER,
+    in_transit_qty INTEGER,
+    shadow_stock_qty INTEGER,
+    effective_inventory INTEGER,
+    data_reliability_index DOUBLE,
+    semantic_context VARCHAR,
     has_inconsistency BOOLEAN,
     confidence_level VARCHAR,
-    
-    -- Decision support
-    reorder_recommendation JSONB
+    reorder_recommendation JSON,
+    fact_valid_from TIMESTAMP,
+    fact_valid_to TIMESTAMP,
+    shelf_last_updated VARCHAR
 );
 ```
 
@@ -259,8 +263,6 @@ Wednesday 09:00 [EVENT] stock_count
   - has_inconsistency = FALSE
   - confidence = high
 ```
-
-*Timeline diagram: [diagrams/03_event_to_fact_timeline.png]*
 
 ### Why This Matters for Aura
 
@@ -311,8 +313,6 @@ Semantic: `quantity_shipped` = Units on a truck (not in warehouse yet)
 - **Aura orders 100 more units** ❌
 - **Actual inventory: 65 units**
 - **Problem: R150,000 overstock**
-
-*Scenario diagram: [diagrams/05_shadow_stock_scenario.png]*
 
 ### Resolution Strategy
 
@@ -365,14 +365,16 @@ When Aura queries this part:
 ```json
 {
   "status": "WARNING",
-  "data": {...},
+  "reason": "Shadow stock detected - possible unprocessed delivery",
+  "action": "Verify with warehouse supervisor before ordering",
   "confidence": "low",
-  "warning": "Shadow stock detected - verify with warehouse supervisor",
-  "recommended_action": "Do NOT order until warehouse confirms count"
+  "warnings": [
+    "Recent delivery may not be reflected in physical count",
+    "Effective inventory calculation may be understated"
+  ],
+  "data": {"...": "..."}
 }
 ```
-
-*Resolution flow diagram: [diagrams/04_semantic_conflict_resolution.png]*
 
 ### Code Implementation
 
@@ -435,28 +437,18 @@ def detect_late_arrival(event):
             'is_late': True,
             'lateness_hours': gap_hours,
             'requires_recompute': True  # May need to update historical facts
-        }
     
     return {'is_late': False}
 ```
 
 ### Idempotency Guarantees
 
-DLT ensures idempotency through:
-1. **Primary keys:** Each event has unique `event_id`
-2. **Merge mode:** Gold facts use `merge` write disposition
-3. **Deduplication:** Multiple ingestions of same event don't create duplicates
+This demo is intentionally **reproducible**:
+1. **Bronze (DLT) uses `replace`** for both sources each run (fresh snapshot ingestion).
+2. **Silver and Gold are rebuilt** each run (the pipeline drops and recreates the tables).
+3. **Gold facts use `INSERT OR REPLACE`** keyed by `part_id`.
 
-```python
-@dlt.transformer(
-    name="gold_inventory_facts",
-    write_disposition="merge",  # Updates existing records
-    primary_key="part_id"       # Ensures uniqueness
-)
-def aggregate_events_to_facts(events):
-    # Even if run multiple times, produces same result
-    ...
-```
+In other words: rerunning the pipeline yields the same state for the same source inputs.
 
 ### Scenario: The 24-Hour Gap
 
@@ -464,7 +456,6 @@ def aggregate_events_to_facts(events):
 ```
 [EVENT] Warehouse count: 45 units
 [FACT] effective_inventory = 45
-[AURA] "We need to reorder" (below 50 threshold)
 ```
 
 **Day 1 - Monday 10:00 (Late arrival):**
@@ -476,9 +467,9 @@ def aggregate_events_to_facts(events):
 
 [RECOMPUTE FACT]
   - effective_inventory = 65 (45 + 20)
-  - fact_valid_from: Sunday 18:00 (backdated!)
+  - late-arrival flagged in Silver (`is_late_arrival = TRUE`)
   
-[AURA UPDATED] "Actually, we don't need to reorder"
+ [AURA UPDATED] "Actually, we don't need to reorder" (snapshot recomputed from the full event stream)
 ```
 
 **Result:** Late-arriving data prevented unnecessary R150K order.
@@ -490,9 +481,9 @@ def aggregate_events_to_facts(events):
 ### Design Goal
 
 Adding a new data source should require:
-- ✅ 10-20 lines of Python code
-- ✅ 5 lines of YAML config
-- ❌ NOT modifying existing pipeline code
+- 10-20 lines of Python code
+- 5 lines of YAML config
+- A small pipeline wiring step (import + run) in this demo implementation
 
 ### Base Source Pattern
 
@@ -512,15 +503,18 @@ class BaseSource(ABC):
         """Implement this method"""
         pass
     
-    @dlt.resource
+    def load_raw_data(self):
+        ...
+
     def to_dlt_resource(self):
-        """Automatically adds metadata"""
+        """Yield records with standard metadata"""
         for record in self.load_raw_data():
             yield {
                 **record,
-                '_source_system': self.name,
-                '_reliability_score': self.reliability_score,
-                # ... standard metadata
+                "_source_system": self.name,
+                "_source_type": self.source_type,
+                "_reliability_score": self.reliability_score,
+                "_ingested_at": datetime.utcnow().isoformat(),
             }
 ```
 
@@ -557,7 +551,7 @@ class SupplierRatingsSource(BaseSource):
 ```yaml
 # src/config/sources.yaml
 sources:
-  # ... existing sources ...
+  # ... existing sources
   
   supplier_ratings:
     name: "supplier_ratings"
@@ -566,7 +560,7 @@ sources:
     reliability_score: 0.85
 ```
 
-**Step 3: Update Pipeline** (2 lines)
+**Step 3: Wire into the DLT Bronze run** (small change)
 
 ```python
 # src/pipeline.py
@@ -574,7 +568,19 @@ from sources import SupplierRatingsSource  # Add import
 
 # In run_bronze_layer():
 ratings_source = SupplierRatingsSource(config['endpoint'])
-pipeline.run([..., ratings_source.to_dlt_resource()])
+
+@dlt.resource(name="supplier_ratings", write_disposition="replace")
+def supplier_ratings_data():
+    for record in ratings_source.load_raw_data():
+        yield {
+            **record,
+            "_source_system": ratings_source.name,
+            "_source_type": ratings_source.source_type,
+            "_reliability_score": ratings_source.reliability_score,
+            "_ingested_at": datetime.now().isoformat(),
+        }
+
+pipeline.run([warehouse_data(), logistics_data(), supplier_ratings_data()])
 ```
 
 **Done!** The new source automatically gets:
@@ -648,10 +654,10 @@ def assess_confidence(fact):
 
 | Freshness | Reliability | Consistency | → Action |
 |-----------|-------------|-------------|----------|
-| ✅ Fresh | ✅ High | ✅ No conflict | **SAFE** - Proceed |
-| ✅ Fresh | ✅ High | ❌ Conflict | **WARNING** - Verify first |
-| ✅ Fresh | ❌ Low | - | **BLOCKED** - Refresh data |
-| ❌ Stale | - | - | **WARNING** - Consider refresh |
+| Fresh | High | No conflict | **SAFE** - Proceed |
+| Fresh | High | Conflict | **WARNING** - Verify first |
+| Fresh | Low | - | **BLOCKED** - Refresh data |
+| Stale | - | - | **WARNING** - Consider refresh |
 
 ### Usage Example
 
@@ -671,9 +677,11 @@ response = aura.ask(
     "status": "SAFE" | "WARNING" | "BLOCKED",
     "data": {...},           # Inventory facts (if available)
     "confidence": "high" | "medium" | "low",
-    "reasoning": "...",      # Human-readable explanation
-    "warnings": [...],       # List of concerns
-    "recommended_action": "..." # What to do next
+    "reasoning": "...",      # Present on SAFE responses
+    "warnings": [...],       # Present on WARNING responses
+    "checks": {...},         # Freshness/reliability/conflict checks
+    "reason": "...",        # Present on WARNING/BLOCKED
+    "action": "..."         # Present on WARNING/BLOCKED
 }
 ```
 
@@ -698,23 +706,14 @@ response = aura.ask(
   "status": "WARNING",
   "confidence": "low",
   "warnings": [
-    "20 units delivered 8 hours ago",
-    "Warehouse count hasn't updated",
-    "Possible shadow stock"
+    "Recent delivery may not be reflected in physical count",
+    "Effective inventory calculation may be understated"
   ],
-  "recommended_action": "Contact warehouse supervisor before ordering"
+  "action": "Verify with warehouse supervisor before ordering"
 }
 ```
 
-**Scenario 3: Blocked Query**
-```json
-{
-  "status": "BLOCKED",
-  "reason": "Data reliability (0.52) below threshold (0.60)",
-  "recommended_action": "Request fresh warehouse count",
-  "data": null
-}
-```
+**Note:** The default demo run focuses on SAFE + WARNING scenarios (shadow stock + reorder urgency). The safety layer also supports `BLOCKED` when reliability falls below the threshold.
 
 ### What This Prevents
 
@@ -741,9 +740,24 @@ pip (Python package manager)
 
 ### Setup Instructions
 
-**1. Clone and Navigate**
+### Option 1 (Recommended): One-Click Demo (Windows)
+Double-click `run_demo.bat`.
+
+It will:
+- Clean old `.duckdb` files
+- Create `venv` and install `requirements.txt`
+- Run `scripts/setup_project.py`
+- Start `uvicorn mock_apis.main:app` in a background window
+- Run `scripts/run_pipeline.py`
+- Run `scripts/demo_aura_queries.py`
+
+See `RECRUITER_SETUP.md` for a recruiter-friendly walkthrough.
+
+### Option 2: Manual Setup
+
+**1. Navigate to the repo**
 ```bash
-cd aura-knowledge-pipeline
+cd agentic-knowledge-engineering-data-pipeline
 ```
 
 **2. Create Virtual Environment**
@@ -794,28 +808,17 @@ This runs Bronze → Silver → Gold transformation.
 python scripts/demo_aura_queries.py
 ```
 
-This demonstrates 4 safety scenarios.
+This demonstrates 4 scenarios with safety checks and decision support.
 
 ### Expected Output
 
-```
-🤖 AURA AGENT QUERY DEMONSTRATION
-================================================================
-
-🟢 Scenario 1: Normal Query - High Quality Data
-Status: SAFE
-Confidence: high
-Effective Inventory: 65 units
-Recommendation: Adequate stock, no reorder needed
-
-🟡 Scenario 2: Shadow Stock Warning  
-Status: WARNING
-Confidence: low
-Warning: 20 units delivered but not in warehouse count
-Action: Verify with warehouse before ordering
-
-✅ Demo complete!
-```
+You will see:
+- **Inventory Summary** (total parts, total units, average reliability)
+- **Scenario 1:** Normal query (P001) with in-transit inventory
+- **Scenario 2:** Shadow stock detected (P003) with WARNING + manual review
+- **Scenario 3:** Low stock (P004) with urgent reorder recommendation
+- **Scenario 4:** Out of stock (P005) with urgent reorder recommendation
+- **Parts Requiring Attention** (warnings + reorder list)
 
 ### Troubleshooting
 

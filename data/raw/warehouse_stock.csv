@@ -1,6 +1,6 @@
 part_id,part_name,qty_on_shelf,unit_cost_zar,warehouse_location,last_updated
-P001,Hydraulic Pump HP-2000,45,12500.0,Rustenburg-Main,2026-01-11 23:15:39
-P002,Conveyor Belt 1200mm,35,8900.5,Rustenburg-Main,2026-01-11 21:15:39
-P003,Safety Valve SV-100,78,3200.0,Rustenburg-Backup,2026-01-11 16:15:39
-P004,Drill Bit 45mm Carbide,5,1850.0,Rustenburg-Main,2026-01-11 22:15:39
-P005,Bearing Assembly BA-500,0,6750.0,Rustenburg-Main,2026-01-11 20:15:39
+P001,Hydraulic Pump HP-2000,45,12500.0,Rustenburg-Main,2026-01-12 01:02:36
+P002,Conveyor Belt 1200mm,35,8900.5,Rustenburg-Main,2026-01-11 23:02:36
+P003,Safety Valve SV-100,78,3200.0,Rustenburg-Backup,2026-01-11 18:02:36
+P004,Drill Bit 45mm Carbide,5,1850.0,Rustenburg-Main,2026-01-12 00:02:36
+P005,Bearing Assembly BA-500,0,6750.0,Rustenburg-Main,2026-01-11 22:02:36

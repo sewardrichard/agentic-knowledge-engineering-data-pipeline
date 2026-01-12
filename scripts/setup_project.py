@@ -15,6 +15,23 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from generate_mock_data import generate_warehouse_csv
 
 
+def cleanup_old_databases():
+    """Remove old database files for a fresh start"""
+    db_files = [
+        "data/processed/aura.duckdb",
+        "aura_bronze.duckdb"
+    ]
+    
+    for db_path in db_files:
+        db_file = Path(db_path)
+        if db_file.exists():
+            try:
+                db_file.unlink()
+                print(f"🗑️  Removed old database: {db_path}")
+            except PermissionError:
+                print(f"⚠️  Could not remove {db_path} (file in use)")
+
+
 def create_directory_structure():
     """Create all required directories"""
     dirs = [
@@ -41,6 +58,9 @@ def setup_environment():
 
 def main():
     print("🚀 Setting up Aura Knowledge Pipeline project...\n")
+    
+    # Clean up old databases for fresh start
+    cleanup_old_databases()
     
     # Create directories
     create_directory_structure()
